@@ -7,7 +7,7 @@ MCP server for **Facebook Pages** organic analytics and management, powered by M
 
 Built for [Claude Code](https://claude.ai/claude-code) and any MCP-compatible AI tool. Gives your AI assistant direct access to your Facebook Page data — posts, insights, comments, and more.
 
-Part of **[The SEO Engine](https://lanternrow.com/seo-engine/)** toolkit by [Lantern Row](https://lanternrow.com) — AI-powered SEO and social media tooling for agencies and businesses.
+Part of **[The SEO Engine](https://lanternrow.com/seo-engine/)** toolkit by [Rex Jones](https://rexjones.me) — AI-powered SEO and social media tooling for agencies and businesses.
 
 ## Why this exists
 
@@ -192,4 +192,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-Built as part of **The SEO Engine** by [Lantern Row](https://lanternrow.com).
+Built as part of **The SEO Engine** by [Rex Jones](https://rexjones.me).
