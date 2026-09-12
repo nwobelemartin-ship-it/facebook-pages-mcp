@@ -1,165 +1,84 @@
-#!/usr/bin/env node
+import express from "express";
+import cors from "cors";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-/**
- * Facebook Pages MCP Server
- *
- * A Model Context Protocol server that wraps Meta's Graph API v25.0 to provide
- * organic Facebook Pages analytics and management tools for use with Claude Code.
- *
- * Auth: Requires a long-lived Page Access Token via FB_PAGE_ACCESS_TOKEN env var,
- * and a default Page ID via FB_PAGE_ID.
- */
+import { buildServer } from "./server.js";
+import { getEnv } from "./env.js";
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+const env = getEnv();
+const app = express();
 
-import {
-  getPageInfoSchema,
-  getPageFeedSchema,
-  handleGetPageInfo,
-  handleGetPageFeed,
-} from "./tools/pages.js";
+app.disable("x-powered-by");
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
 
-import {
-  getPageInsightsSchema,
-  getVideoInsightsSchema,
-  handleGetPageInsights,
-  handleGetVideoInsights,
-} from "./tools/insights.js";
-
-import {
-  getPublishedPostsSchema,
-  getPostInsightsSchema,
-  getPostCommentsSchema,
-  createPostSchema,
-  handleGetPublishedPosts,
-  handleGetPostInsights,
-  handleGetPostComments,
-  handleCreatePost,
-} from "./tools/posts.js";
-
-import {
-  refreshTokenInfoSchema,
-  handleRefreshTokenInfo,
-} from "./tools/utils.js";
-
-// ─── Server ────────────────────────────────────────────────────────
-
-const server = new McpServer({
-  name: "facebook-pages",
-  version: "1.0.0",
+// ── Health check (Suga readiness probe) ────────────────────────────────
+app.get("/health", (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    name: "facebook-pages-mcp",
+    version: "1.0.3",
+  });
 });
 
-// ─── Helper ────────────────────────────────────────────────────────
+// ── MCP endpoint ───────────────────────────────────────────────────────
+// Stateless: a fresh McpServer + transport per request. No session map.
+// This matches the current tool set (all stateless request/response) and
+// avoids Supabase Edge Function timeout problems.
+app.post("/mcp", async (req, res) => {
+  const server = buildServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
 
-/**
- * Wrap a tool handler so that errors are returned as MCP text content
- * rather than crashing the server.
- */
-function wrapHandler<TArgs, TResult>(
-  fn: (args: TArgs) => Promise<TResult>
-): (args: TArgs) => Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  return async (args: TArgs) => {
-    try {
-      const result = await fn(args);
-      return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(result, null, 2) },
-        ],
-      };
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-      };
+  res.on("close", () => {
+    transport.close().catch(() => {});
+    server.close().catch(() => {});
+  });
+
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error("[mcp] request failed:", err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: null,
+      });
     }
-  };
-}
-
-// ─── Tool Registration ─────────────────────────────────────────────
-
-// 1. get_page_info
-server.tool(
-  "get_page_info",
-  "Retrieve Facebook Page metadata: name, category, follower count, contact info, location, hours, and cover photo.",
-  getPageInfoSchema.shape,
-  wrapHandler(handleGetPageInfo)
-);
-
-// 2. get_page_insights
-server.tool(
-  "get_page_insights",
-  "Retrieve page-level analytics (page_views_total, page_fans, page_fan_adds, page_fan_removes, page_actions_post_reactions_total). Supports day/week/days_28 periods and date ranges. NOTE: Legacy metrics page_impressions and page_reach are deprecated as of June 2026.",
-  getPageInsightsSchema.shape,
-  wrapHandler(handleGetPageInsights)
-);
-
-// 3. get_published_posts
-server.tool(
-  "get_published_posts",
-  "Retrieve a paginated list of posts published by the page, including message, image, permalink, shares, and type.",
-  getPublishedPostsSchema.shape,
-  wrapHandler(handleGetPublishedPosts)
-);
-
-// 4. get_post_insights
-server.tool(
-  "get_post_insights",
-  "Retrieve engagement metrics for a specific post: impressions, engaged users, clicks, reactions by type, and activity by action type.",
-  getPostInsightsSchema.shape,
-  wrapHandler(handleGetPostInsights)
-);
-
-// 5. get_post_comments
-server.tool(
-  "get_post_comments",
-  "Retrieve paginated comments on a specific post, including author, timestamp, like count, and reply count.",
-  getPostCommentsSchema.shape,
-  wrapHandler(handleGetPostComments)
-);
-
-// 6. get_video_insights
-server.tool(
-  "get_video_insights",
-  "Retrieve performance metrics for a specific video: views, impressions, average watch time, total watch time, and reactions by type.",
-  getVideoInsightsSchema.shape,
-  wrapHandler(handleGetVideoInsights)
-);
-
-// 7. get_page_feed
-server.tool(
-  "get_page_feed",
-  "Retrieve the full page feed including visitor posts (unlike published_posts which only returns page-authored posts).",
-  getPageFeedSchema.shape,
-  wrapHandler(handleGetPageFeed)
-);
-
-// 8. create_post
-server.tool(
-  "create_post",
-  "Create a new post on the Facebook Page. Supports text posts, link posts, and photo posts. Returns the new post ID.",
-  createPostSchema.shape,
-  wrapHandler(handleCreatePost)
-);
-
-// 9. refresh_token_info
-server.tool(
-  "refresh_token_info",
-  "Inspect the current access token to check validity, expiration date, and granted scopes. Useful for diagnosing auth issues.",
-  refreshTokenInfoSchema.shape,
-  wrapHandler(handleRefreshTokenInfo)
-);
-
-// ─── Start ─────────────────────────────────────────────────────────
-
-async function main(): Promise<void> {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Facebook Pages MCP server running on stdio");
-}
-
-main().catch((error) => {
-  console.error("Fatal error starting server:", error);
-  process.exit(1);
+  }
 });
+
+// Stateless mode has no session to GET (upgrade) or DELETE (terminate).
+app.get("/mcp", (_req, res) => {
+  res.status(405).json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed in stateless mode" },
+    id: null,
+  });
+});
+app.delete("/mcp", (_req, res) => {
+  res.status(405).json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed in stateless mode" },
+    id: null,
+  });
+});
+
+// ── Boot ───────────────────────────────────────────────────────────────
+const httpServer = app.listen(env.PORT, env.HOST, () => {
+  console.log(
+    `facebook-pages-mcp listening on http://${env.HOST}:${env.PORT}`
+  );
+});
+
+function shutdown(signal: string) {
+  console.log(`[shutdown] received ${signal}`);
+  httpServer.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
