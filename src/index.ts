@@ -12,6 +12,16 @@ app.disable("x-powered-by");
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+// Root — Suga's default healthcheck probes `/`. Return 200 here so the
+// container is not flagged unhealthy and restarted in a loop.
+app.get("/", (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    name: "facebook-pages-mcp",
+    version: "1.0.3",
+  });
+});
+
 // ── Health check (Suga readiness probe) ────────────────────────────────
 app.get("/health", (_req, res) => {
   res.status(200).json({
